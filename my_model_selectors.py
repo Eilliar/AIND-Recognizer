@@ -7,7 +7,7 @@ from hmmlearn.hmm import GaussianHMM
 from sklearn.model_selection import KFold
 from asl_utils import combine_sequences
 
-
+DEBUG = False
 class ModelSelector(object):
     '''
     base class for model selection (strategy design pattern)
@@ -67,7 +67,17 @@ class SelectorBIC(ModelSelector):
     http://www2.imm.dtu.dk/courses/02433/doc/ch6_slides.pdf
     Bayesian information criteria: BIC = -2 * logL + p * logN
     """
-
+    # Note about implementation:
+    # I got a bit confused on the calculation of p. So I'm following the instructions on Udacity's forum:
+    # https://discussions.udacity.com/t/number-of-parameters-bic-calculation/233235/12
+    # Where alvaro_257625 highligthed:
+    # Initial state occupation probabilities (isop) = numStates
+    # Transition probabilities (tp) = numStates*(numStates - 1)
+    # Emission probabilities (ep) = numStates*numFeatures*2 = numMeans+numCovars
+    # p = Initial state occupation probabilities + Transition probabilities + Emission probabilities
+    # for a model trained as follows (base_model): 
+    # GaussianHMM(n_components=num_states, covariance_type="diag", n_iter=1000, random_state=self.random_state)
+    
     def select(self):
         """ select the best model for self.this_word based on
         BIC score for n between self.min_n_components and self.max_n_components
@@ -77,7 +87,39 @@ class SelectorBIC(ModelSelector):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
         # TODO implement model selection based on BIC scores
-        raise NotImplementedError
+        # Variable initialions
+        best_bic_score = float("+inf") # since we have to minimize it, make sense to start from +inf
+        best_model = None
+        n_features = self.X.shape[1]
+
+        # iterate over the number of hidden states (num_hidden_states)
+        for n_hidden_states in range(self.min_n_components, self.max_n_components + 1):
+            try:
+                # Build model
+                model = self.base_model(n_hidden_states)
+                # Compute loglikelihood
+                logLikelihood = model.score(self.X, self.lengths)
+                # Compute log(N), where N = number of data points.
+                logN = np.log(len(self.X))
+                # Compute p
+                isop = n_hidden_states
+                tp = n_hidden_states*(n_hidden_states - 1)
+                ep = n_hidden_states*n_features*2
+                p =  isop + tp + ep
+                # BIC
+                bic_score = -2*logLikelihood + p*logN
+                if DEBUG:
+                    print("BIC: {}".format(bic_score))
+
+                best_bic_score, best_model =  min((best_bic_score, best_model), (bic_score, model))
+            except Exception as e:
+                if DEBUG:
+                    # Print some debug information
+                    print('ERROR: {}'.format(e))
+                pass
+
+        return best_model
+
 
 
 class SelectorDIC(ModelSelector):
@@ -93,7 +135,44 @@ class SelectorDIC(ModelSelector):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
         # TODO implement model selection based on DIC scores
-        raise NotImplementedError
+        best_dic_score = float("-inf")
+        best_model = None
+        n_features = self.X.shape[1]
+
+        # iterate over the number of hidden states (num_hidden_states)
+        for n_hidden_states in range(self.min_n_components, self.max_n_components + 1):
+            try:
+                model = self.base_model(n_hidden_states)
+                logLikelihood = model.score(self.X, self.lengths)
+
+                #Calculate all other words average score
+                p_score = 0
+                count = 0
+                for word in self.words:
+                    if word != self.this_word:
+                        new_X, new_lengths = self.hwords[word]
+                        try:
+                            p_score += hmm_model.score(new_X, new_lengths)
+                            count += 1
+                        except:
+                            pass
+                if count > 0:
+                    logAllButword = p_score/count
+                else:
+                    logAllButword = 0
+
+                #Calculate the total score
+                dic_score = logLikelihood - logAllButword
+                
+                best_score, best_model = max((best_dic_score,best_model),(dic_score,model))
+            
+            except Exception as e:
+                if DEBUG:
+                    # Print some debug information
+                    print('ERROR: {}'.format(e))
+                pass
+
+        return best_model
 
 
 class SelectorCV(ModelSelector):
@@ -105,4 +184,55 @@ class SelectorCV(ModelSelector):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
         # TODO implement model selection using CV
-        raise NotImplementedError
+        # Define method and number of splits to perform
+        n_splits = 3
+        if len(self.sequences) < 2:
+            return None
+        elif len(self.sequences) == 2:
+            n_splits = 2
+        split_method = KFold(n_splits=n_splits)
+
+        # Variable initializations
+        best_model = None
+        best_num_components = self.min_n_components
+        best_logLikelihood = float('-inf') # since we have to maximize it, make sense to start from -inf
+
+        # iterate over the number of hidden states (num_hidden_states)
+        for n_hidden_states in range(self.min_n_components, self.max_n_components + 1):
+            p_score = 0
+            # number of trained models, to use on score average
+            i = 0
+
+            for cv_train_idx, cv_test_idx in split_method.split(self.sequences):
+                # Default Model is None, to return in case of error.
+                model = None
+
+                try: # Try to train model, it's know hmmlearn to raise errors sometimes.
+                    # Combine training set
+                    X_train, train_lengths = combine_sequences(cv_train_idx, self.sequences)
+                    # Combine test set
+                    X_test, test_lengths = combine_sequences(cv_test_idx, self.sequences)
+
+                    # Train GaussianHMM
+                    model = GaussianHMM(n_components = n_hidden_states, covariance_type="diag", n_iter = 1000, 
+                        random_state=self.random_state, verbose = False).fit(X_train, train_lengths)
+                    # Score the trained model on the test set
+                    p_score = model.score(X_test, test_lengths)
+                    i += 1
+                except Exception as e:
+                    if DEBUG:
+                        # Print some debug information
+                        print('ERROR: Training HMM. \ncv_train_idx: {}\tcv_test_ix:{}\nError message: {}'.format(cv_train_idx, 
+                            cv_test_idx, e))
+                    pass
+
+            if i > 0:
+                # Average score
+                n_score = p_score / i
+            else:
+                n_score = 0
+
+            if n_score > best_logLikelihood:
+                best_logLikelihood, best_num_components, best_model = n_score, n_hidden_states, model
+
+        return best_model
