@@ -185,11 +185,10 @@ class SelectorCV(ModelSelector):
 
         # TODO implement model selection using CV
         # Define method and number of splits to perform
-        n_splits = 3
-        if len(self.sequences) < 2:
-            return None
-        elif len(self.sequences) == 2:
-            n_splits = 2
+
+        n_splits = min(len(self.sequences), 5)
+        if DEBUG:
+            print("len(sequence): {}\tn_splits: {}".format(len(self.sequences), n_splits))
         split_method = KFold(n_splits=n_splits)
 
         # Variable initializations
@@ -206,12 +205,20 @@ class SelectorCV(ModelSelector):
             for cv_train_idx, cv_test_idx in split_method.split(self.sequences):
                 # Default Model is None, to return in case of error.
                 model = None
-
-                try: # Try to train model, it's know hmmlearn to raise errors sometimes.
-                    # Combine training set
-                    X_train, train_lengths = combine_sequences(cv_train_idx, self.sequences)
-                    # Combine test set
-                    X_test, test_lengths = combine_sequences(cv_test_idx, self.sequences)
+                # Try to train model, it's know hmmlearn to raise errors sometimes.
+                try: 
+                    if len(self.sequences) > 2:
+                        # Combine training set
+                        X_train, train_lengths = combine_sequences(cv_train_idx, self.sequences)
+                        # Combine test set
+                        X_test, test_lengths = combine_sequences(cv_test_idx, self.sequences)
+                    else: # try to handle error cases like the ones that occur on word FISH
+                        X_train, train_lengths = combine_sequences([0], self.sequences)
+                        if len(self.sequences) == 2:
+                            X_test, test_lengths = combine_sequences([1], self.sequences)
+                        else:
+                            # It doesn't make sense to try CV with one sequence, but if so we can use the same sequence from train
+                            X_test, test_lengths = combine_sequences([0], self.sequences)
 
                     # Train GaussianHMM
                     model = GaussianHMM(n_components = n_hidden_states, covariance_type="diag", n_iter = 1000, 
