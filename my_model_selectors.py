@@ -184,18 +184,44 @@ class SelectorCV(ModelSelector):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
         # TODO implement model selection using CV
-        # Define method and number of splits to perform
-
-        n_splits = min(len(self.sequences), 5)
-        if DEBUG:
-            print("len(sequence): {}\tn_splits: {}".format(len(self.sequences), n_splits))
-        split_method = KFold(n_splits=n_splits)
-
         # Variable initializations
         best_model = None
         best_num_components = self.min_n_components
         best_logLikelihood = float('-inf') # since we have to maximize it, make sense to start from -inf
 
+        # Handle case when have only one sequence:
+        if len(self.sequences) == 1:
+            for n_hidden_states in range(self.min_n_components, self.max_n_components + 1):
+                p_score = 0
+                try:
+                    model = None
+                    X_train, train_lengths = combine_sequences([0], self.sequences)
+                    # It doesn't make sense to try CV with one sequence, but if so we can use the same sequence from train
+                    X_test, test_lengths = combine_sequences([0], self.sequences)
+                    # Train GassianHMM
+                    model = GaussianHMM(n_components = n_hidden_states, covariance_type="diag", n_iter = 1000, 
+                        random_state=self.random_state, verbose = False).fit(X_train, train_lengths)
+                    # Score the trained model on the test set
+                    p_score = model.score(X_test, test_lengths)
+
+                except Exception as e:
+                    if DEBUG:
+                        # Print some debug information
+                        print('ERROR: Training HMM. \ncv_train_idx: {}\tcv_test_ix:{}\nError message: {}'.format(cv_train_idx, 
+                            cv_test_idx, e))
+                    pass
+
+                if p_score > best_logLikelihood:
+                    best_logLikelihood, best_num_components, best_model = p_score, n_hidden_states, model
+
+            return best_model
+
+        # Cases when number os sequences >= 2
+        # Define method and number of splits to perform
+        n_splits = min(len(self.sequences), 5)
+        if DEBUG:
+            print("len(sequence): {}\tn_splits: {}".format(len(self.sequences), n_splits))
+        split_method = KFold(n_splits=n_splits)
         # iterate over the number of hidden states (num_hidden_states)
         for n_hidden_states in range(self.min_n_components, self.max_n_components + 1):
             p_score = 0
